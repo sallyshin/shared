@@ -1,0 +1,573 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Description": "This template creates AWS Lambda for configuring hostname as target for Elastic Load Balancer. Template creates following resources:\n  - If CreateDstS3BucketCondition is set to Yes, creates new S3 bucket to be\n  used as destination S3 bucket for ElbHostnameAsTarget.zip and for IP\n  address updates. If set to No, uses existing S3 bucket. Existing S3 bucket\n  region and region from which you launch this CloudFormation stack should\n  be the same\n  - 2 Lambdas: S3ObjectLambda and ElbHostnameTarget\n  - One Event Rule with Lambda Function as target\n  - One Lambda Permission to invoke Event Rule\n\nBefore you launch this template, make sure that you have a target group with  the type ip associated with a Elastic Load Balancer. Lambda created by the template is not configured to access resources in your VPC. If you plan to  use VPC .2 resolver as the DNS server, configure Lambda to access resources in your VPC.",
+    "Metadata": {
+        "AWS::CloudFormation::Interface": {
+            "ParameterGroups": [
+                {
+                    "Label": {
+                        "default": "S3 Configuration"
+                    },
+                    "Parameters": [
+                        "DstS3BucketName",
+                        "CreateDstS3BucketCondition"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "User Configurable Lambda Environment Variables"
+                    },
+                    "Parameters": [
+                        "ElbTargetGroupArn",
+                        "TargetFQDN",
+                        "DnsServers",
+                        "MaxLookupPerInvocation",
+                        "InvocationBeforeRegistration",
+                        "ReportIpCountCwMetric",
+                        "RemoveUntrackedTgIp"
+                    ]
+                },
+                {
+                    "Label": {
+                        "default": "CloudWatch Alarm Configuation"
+                    },
+                    "Parameters": [
+                        "CreateAlarmCondition",
+                        "CompositeAlarmSnsEmail"
+                    ]
+                }
+            ],
+            "ParameterLabels": {
+                "DstS3BucketName": {
+                    "default": "Destination S3 Bucket Name"
+                },
+                "CreateDstS3BucketCondition": {
+                    "default": "Create S3 bucket condition"
+                },
+                "CompositeAlarmSnsEmail": {
+                    "default": "Email for SNS Topic for Composite Alarm"
+                },
+                "CreateAlarmCondition": {
+                    "default": "Create CloudWatch Alarm condition"
+                },
+                "ElbTargetGroupArn": {
+                    "default": "ARN of Target Group assocated with desired Network Load Balancer"
+                },
+                "TargetFQDN": {
+                    "default": "Fully Qualified Domain Name (FQDN) used for managing your application cluster"
+                },
+                "DnsServers": {
+                    "default": "The IP Address of DNS resolver/server(s) to query"
+                },
+                "MaxLookupPerInvocation": {
+                    "default": "The max times of DNS look per invocation"
+                },
+                "InvocationBeforeRegistration": {
+                    "default": "The number of required Invocations before a IP is deregistered"
+                },
+                "ReportIpCountCwMetric": {
+                    "default": "Enable/Disable Hostname IP count CloudWatch metric"
+                },
+                "RemoveUntrackedTgIp": {
+                    "default": "Remove IPs that were not added by the fucntion"
+                }
+            }
+        }
+    },
+    "Parameters": {
+        "DstS3BucketName": {
+            "Description": "Destination S3 bucket name. Required for this stack. If using existing bucket, set CreateDstS3BucketCondition parameter to No, else set it to Yes.",
+            "Type": "String",
+            "ConstraintDescription": "Must be globally unique S3 bucket name."
+        },
+        "CreateDstS3BucketCondition": {
+            "Description": "Do you want to create new S3 bucket or use an existing one? If using an existing bucket, verify it is in the same region as the region from where you are launching this stack (launch stack region).      ",
+            "Default": "No",
+            "AllowedValues": [
+                "Yes",
+                "No"
+            ],
+            "Type": "String",
+            "ConstraintDescription": "Must be a valid Yes or No option"
+        },
+        "CreateAlarmCondition": {
+            "Description": "Do you want to create CloudWatch Alarm for Lambda?",
+            "Default": "Yes",
+            "AllowedValues": [
+                "Yes",
+                "No"
+            ],
+            "Type": "String",
+            "ConstraintDescription": "Must be a valid Yes or No option"
+        },
+        "CompositeAlarmSnsEmail": {
+            "Description": "Email for SNS Topic for Composite Alarm",
+            "Type": "String",
+            "ConstraintDescription": "Must be a valid email."
+        },
+        "ElbTargetGroupArn": {
+            "Description": "Enter ARN of Target Group associated with desired Network Load Balancer Example: arn:aws:elasticloadbalancing:us-west-2:123456789012:targetgroup/my-targets/73e2d6bc24d8a067",
+            "Type": "String",
+            "ConstraintDescription": "Must be a valid Target Group ARN"
+        },
+        "TargetFQDN": {
+            "Description": "Full Qualified Domain Name (FQDN) used for managing your application cluster",
+            "Type": "String",
+            "ConstraintDescription": "Must be a valid FQDN"
+        },
+        "DnsServers": {
+            "Description": "DNS server to resolve TargetFQDN. Specify mulitple servers separted by ',': '10.10.10.10, 10.10.10.11'",
+            "Type": "String",
+            "ConstraintDescription": "Must be a valid string of DNS servers"
+        },
+        "MaxLookupPerInvocation": {
+            "Description": "The max times of DNS look per invocation",
+            "Type": "Number",
+            "Default": 10,
+            "ConstraintDescription": "Must be a valid integer value"
+        },
+        "InvocationBeforeRegistration": {
+            "Description": "The number of required Invocations before a IP is deregistered",
+            "Type": "Number",
+            "Default": 3,
+            "ConstraintDescription": "Must be a valid integer value"
+        },
+        "ReportIpCountCwMetric": {
+            "Description": "Enable/Disable Hostname IP count CloudWatch metric",
+            "Type": "String",
+            "Default": true,
+            "AllowedValues": [
+                true,
+                false
+            ],
+            "ConstraintDescription": "Must be True or False"
+        },
+        "RemoveUntrackedTgIp": {
+            "Description": "Remove IPs that were not added by the fucntion",
+            "Type": "String",
+            "Default": false,
+            "AllowedValues": [
+                true,
+                false
+            ],
+            "ConstraintDescription": "Must be True or False"
+        }
+    },
+    "Conditions": {
+        "CreateDstS3Bucket": {
+            "Fn::Equals": [
+                {
+                    "Ref": "CreateDstS3BucketCondition"
+                },
+                "Yes"
+            ]
+        },
+        "CreateAlarms": {
+            "Fn::Equals": [
+                {
+                    "Ref": "CreateAlarmCondition"
+                },
+                "Yes"
+            ]
+        }
+    },
+    "Resources": {
+        "S3BucketForLambda": {
+            "Condition": "CreateDstS3Bucket",
+            "Type": "AWS::S3::Bucket",
+            "Properties": {
+                "BucketName": {
+                    "Ref": "DstS3BucketName"
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": "ElbLambdaSol-S3Bucket"
+                    }
+                ]
+            }
+        },
+        "LambdaExecutionRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "lambda.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "root",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "logs:CreateLogGroup",
+                                        "logs:CreateLogStream",
+                                        "logs:PutLogEvents"
+                                    ],
+                                    "Resource": "arn:aws:logs:*:*:*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "s3:PutObject",
+                                        "s3:GetObject",
+                                        "s3:DeleteObject",
+                                        "s3:CreateBucket",
+                                        "s3:DeleteBucket"
+                                    ],
+                                    "Resource": {
+                                        "Fn::Join": [
+                                            "",
+                                            [
+                                                "arn:aws:s3:::",
+                                                {
+                                                    "Ref": "DstS3BucketName"
+                                                },
+                                                "/*"
+                                            ]
+                                        ]
+                                    }
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "s3:ListAllMyBuckets",
+                                        "cloudwatch:PutMetricData",
+                                        "elasticloadbalancing:RegisterTargets",
+                                        "elasticloadbalancing:DeregisterTargets",
+                                        "elasticloadbalancing:DescribeTargetHealth",
+                                        "ec2:CreateNetworkInterface",
+                                        "ec2:DescribeNetworkInterfaces",
+                                        "ec2:DeleteNetworkInterface"
+                                    ],
+                                    "Resource": "*"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "S3ObjectLambda": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Handler": "index.handler",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "LambdaExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "Code": {
+                    "ZipFile": "import json\nimport logging\nimport os\nimport sys\nimport urllib.request\nfrom urllib.parse import urlparse\n\nimport boto3\nimport cfnresponse\nfrom botocore.exceptions import ClientError\n\ntry:\n    s3_resource = boto3.resource('s3')\n    s3_client = boto3.client('s3')\nexcept ClientError as e:\n    logger.error(f\"ERROR: failed to connect to S3 resource or client: {e}\")\n    sys.exit(1)\n\ndef obj_info(url):\n    url_path = urlparse(url).path\n    obj_name = os.path.basename(url_path)\n    obj_path = f'/tmp/{obj_name}'\n    return obj_name, obj_path\n\ndef upload_to_s3(url, dst_bucket, obj_path, obj_name):\n    urllib.request.urlretrieve(url, obj_path)\n    s3_resource.Bucket(dst_bucket).upload_file(Filename=obj_path, Key=obj_name)\n\ndef handler(event, context):\n    logger = logging.getLogger()\n    logger.setLevel(logging.INFO)\n    logger.info(\"INFO: Received event: {}\".format(json.dumps(event)))\n\n    responseData = {}\n    responseStatus = cfnresponse.FAILED\n\n    print(event[\"ResourceProperties\"])\n    try:\n        src_url = event[\"ResourceProperties\"][\"SourceUrl\"]\n        dst_s3 = event[\"ResourceProperties\"][\"DstS3Bucket\"]\n        aws_region = event[\"ResourceProperties\"][\"AwsRegion\"]\n    except Exception as e:\n        logger.error(f\"parameter retival failure: {e}\")\n        sys.exit(1)\n    \n    if isinstance(dst_s3, list):\n        dst_s3 = dst_s3[0]\n\n    obj_name = obj_info(src_url)[0]\n    obj_path = obj_info(src_url)[1]\n    try:\n        if event[\"RequestType\"] == \"Delete\":    \n            s3_resource.Object(dst_s3, obj_name).delete()\n            responseStatus = cfnresponse.SUCCESS\n            cfnresponse.send(event, context, responseStatus, responseData)\n    except Exception:\n        logger.exception(\"Signaling failure to CloudFormation.\")\n        cfnresponse.send(event, context, cfnresponse.FAILED, {})\n    if event[\"RequestType\"] == \"Create\":\n        logger.info(f\"INFO: Copying {obj_name} to {dst_s3}\")\n        upload_to_s3(src_url, dst_s3, obj_path, obj_name)\n        responseStatus = cfnresponse.SUCCESS\n        cfnresponse.send(event, context, responseStatus, responseData)\n"
+                },
+                "Runtime": "python3.7",
+                "Timeout": 45
+            }
+        },
+        "ElbHostnameTarget": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Handler": "elb_hostname_as_target.lambda_handler",
+                "Role": {
+                    "Fn::GetAtt": [
+                        "LambdaExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "Code": {
+                    "S3Bucket": {
+                        "Fn::If": [
+                            "CreateDstS3Bucket",
+                            {
+                                "Ref": "S3BucketForLambda"
+                            },
+                            {
+                                "Ref": "DstS3BucketName"
+                            }
+                        ]
+                    },
+                    "S3Key": "ElbHostnameAsTarget.zip"
+                },
+                "Environment": {
+                    "Variables": {
+                        "TARGET_FQDN": {
+                            "Ref": "TargetFQDN"
+                        },
+                        "ELB_TG_ARN": {
+                            "Ref": "ElbTargetGroupArn"
+                        },
+                        "S3_BUCKET": {
+                            "Fn::If": [
+                                "CreateDstS3Bucket",
+                                {
+                                    "Ref": "S3BucketForLambda"
+                                },
+                                {
+                                    "Ref": "DstS3BucketName"
+                                }
+                            ]
+                        },
+                        "DNS_SERVER": {
+                            "Ref": "DnsServers"
+                        },
+                        "BUCKET_REGION": {
+                            "Ref": "AWS::Region"
+                        },
+                        "MAX_LOOKUP_PER_INVOCATION": {
+                            "Ref": "MaxLookupPerInvocation"
+                        },
+                        "INVOCATIONS_BEFORE_DEREGISTRATION": {
+                            "Ref": "InvocationBeforeRegistration"
+                        },
+                        "REPORT_IP_COUNT_CW_METRIC": {
+                            "Ref": "ReportIpCountCwMetric"
+                        },
+                        "REMOVE_UNTRACKED_TG_IP": {
+                            "Ref": "RemoveUntrackedTgIp"
+                        }
+                    }
+                },
+                "Runtime": "python3.7",
+                "Timeout": 45
+            }
+        },
+        "LambdaEventRule": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Description": "ScheduledRule",
+                "Name": "ElbHostnameAsTargetEbTrigger",
+                "ScheduleExpression": "rate(5 minutes)",
+                "State": "ENABLED",
+                "Targets": [
+                    {
+                        "Arn": {
+                            "Fn::GetAtt": [
+                                "ElbHostnameTarget",
+                                "Arn"
+                            ]
+                        },
+                        "Id": "ElbHostnameTargetV1"
+                    }
+                ]
+            }
+        },
+        "PermissionForEventsToInvokeLambda": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "FunctionName": {
+                    "Ref": "ElbHostnameTarget"
+                },
+                "Action": "lambda:InvokeFunction",
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::GetAtt": [
+                        "LambdaEventRule",
+                        "Arn"
+                    ]
+                }
+            }
+        },
+        "SnsTopic": {
+            "Condition": "CreateAlarms",
+            "Type": "AWS::SNS::Topic",
+            "Properties": {
+                "Subscription": [
+                    {
+                        "Endpoint": {
+                            "Ref": "CompositeAlarmSnsEmail"
+                        },
+                        "Protocol": "email"
+                    }
+                ],
+                "TopicName": {
+                    "Fn::Join": [
+                        "",
+                        [
+                            {
+                                "Ref": "ElbHostnameTarget"
+                            },
+                            "-sns-topic"
+                        ]
+                    ]
+                }
+            }
+        },
+        "LambdaInvocationsAlarm": {
+            "Condition": "CreateAlarms",
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": "Lambda invocations. Alarms when function invocation reports an error",
+                "AlarmName": {
+                    "Fn::Join": [
+                        "",
+                        [
+                            {
+                                "Ref": "ElbHostnameTarget"
+                            },
+                            "-invocations"
+                        ]
+                    ]
+                },
+                "MetricName": "Invocations",
+                "Namespace": "AWS/Lambda",
+                "Dimensions": [
+                    {
+                        "Name": "FunctionName",
+                        "Value": {
+                            "Ref": "ElbHostnameTarget"
+                        }
+                    }
+                ],
+                "Period": 60,
+                "EvaluationPeriods": 1,
+                "DatapointsToAlarm": 1,
+                "Threshold": 1,
+                "ComparisonOperator": "LessThanThreshold",
+                "Statistic": "Sum",
+                "TreatMissingData": "breaching"
+            }
+        },
+        "LambdaErrorsAlarm": {
+            "Condition": "CreateAlarms",
+            "Type": "AWS::CloudWatch::Alarm",
+            "Properties": {
+                "AlarmDescription": "Lambda errors. Alarm when function reports an error",
+                "AlarmName": {
+                    "Fn::Join": [
+                        "",
+                        [
+                            {
+                                "Ref": "ElbHostnameTarget"
+                            },
+                            "-errors"
+                        ]
+                    ]
+                },
+                "MetricName": "Errors",
+                "Namespace": "AWS/Lambda",
+                "Dimensions": [
+                    {
+                        "Name": "FunctionName",
+                        "Value": {
+                            "Ref": "ElbHostnameTarget"
+                        }
+                    }
+                ],
+                "Period": 60,
+                "EvaluationPeriods": 1,
+                "DatapointsToAlarm": 1,
+                "Threshold": 0,
+                "ComparisonOperator": "GreaterThanThreshold",
+                "Statistic": "Sum",
+                "TreatMissingData": "breaching"
+            }
+        },
+        "LambdaCompositeAlarm": {
+            "Condition": "CreateAlarms",
+            "Type": "AWS::CloudWatch::CompositeAlarm",
+            "DependsOn": [
+                "LambdaInvocationsAlarm",
+                "LambdaErrorsAlarm"
+            ],
+            "Properties": {
+                "AlarmName": {
+                    "Fn::Join": [
+                        "",
+                        [
+                            {
+                                "Ref": "ElbHostnameTarget"
+                            },
+                            "-monitor"
+                        ]
+                    ]
+                },
+                "AlarmRule": {
+                    "Fn::Sub": "(ALARM(${LambdaErrorsAlarm}) OR ALARM(${LambdaInvocationsAlarm}))"
+                },
+                "AlarmActions": [
+                    {
+                        "Ref": "SnsTopic"
+                    }
+                ],
+                "AlarmDescription": "Lambda composite. Alarm triggers when either of the metric alarms trigger"
+            }
+        }
+    },
+    "Outputs": {
+        "S3ObjectLambdaArn": {
+            "Description": "S3Object Lambda ARN",
+            "Value": {
+                "Fn::GetAtt": [
+                    "S3ObjectLambda",
+                    "Arn"
+                ]
+            }
+        },
+        "ElbHostnameTargetArn": {
+            "Description": "ElbHostnameTarget Lambda ARN",
+            "Value": {
+                "Fn::GetAtt": [
+                    "ElbHostnameTarget",
+                    "Arn"
+                ]
+            }
+        },
+        "ElbSnsTopic": {
+            "Condition": "CreateAlarms",
+            "Description": "ELB SNS Topic",
+            "Value": {
+                "Fn::GetAtt": [
+                    "SnsTopic",
+                    "TopicName"
+                ]
+            }
+        },
+        "ElbLambdaInvocationsAlarm": {
+            "Condition": "CreateAlarms",
+            "Description": "ELB Lambda Invocations Alarm",
+            "Value": {
+                "Fn::GetAtt": [
+                    "LambdaInvocationsAlarm",
+                    "Arn"
+                ]
+            }
+        },
+        "ElbLambdaErrorsAlarm": {
+            "Condition": "CreateAlarms",
+            "Description": "ELB Lambda Errors Alarm",
+            "Value": {
+                "Fn::GetAtt": [
+                    "LambdaErrorsAlarm",
+                    "Arn"
+                ]
+            }
+        },
+        "ElbLambdaCompositeAlarm": {
+            "Condition": "CreateAlarms",
+            "Description": "ELB Lambda Composite Alarm",
+            "Value": {
+                "Fn::GetAtt": [
+                    "LambdaCompositeAlarm",
+                    "Arn"
+                ]
+            }
+        }
+    }
+}
